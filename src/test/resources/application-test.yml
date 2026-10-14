@@ -1,0 +1,13 @@
+gptlibrary:
+  ai:
+    offline-mock: true
+  rag:
+    similarity-threshold: 0.5
+    top-k: 4
+
+spring:
+  ai:
+    model:
+      chat: none # disables GoogleGenAiChatAutoConfiguration during tests
+      embedding:
+        text: none # disables GoogleGenAiTextEmbeddingAutoConfiguration during tests
