@@ -165,4 +165,279 @@ class RagServiceUnitTest {
                 .contains("How does Spring AI work?")
                 .contains("Spring AI integrates LLMs with vector databases");
     }
+
+    @Test
+    void queryReturnsInsufficientEvidenceWhenModelReportsMissingFactEvenWithRetrievedChunks() {
+        UUID docId = UUID.randomUUID();
+        DocumentEntity indexedDoc = DocumentEntity.builder()
+                .id(docId)
+                .filename("ai-testing-tools.pdf")
+                .status(DocumentEntity.DocumentStatus.INDEXED)
+                .build();
+
+        // Chunks are retrieved because broad topic matches (e.g. AI testing tools)
+        Document chunk = Document.builder()
+                .text("AI testing tools have evolved significantly in modern software engineering.")
+                .metadata(Map.of(
+                        "document_id", docId.toString(),
+                        "filename", "ai-testing-tools.pdf",
+                        "chunk_index", 0
+                ))
+                .score(0.82)
+                .build();
+
+        when(mockVectorStore.similaritySearch(any(SearchRequest.class)))
+                .thenReturn(List.of(chunk));
+        when(mockDocumentRepository.findById(docId))
+                .thenReturn(Optional.of(indexedDoc));
+
+        // The specific question is "what accuracy percentage do the best AI testing tools achieve?"
+        // The LLM accurately answers that the document does not mention the accuracy percentage.
+        String llmRefusal = "The provided document discusses AI testing tools, but does not mention the accuracy percentage achieved by the best tools.";
+        ChatResponse mockChatResponse = new ChatResponse(List.of(
+                new Generation(new org.springframework.ai.chat.messages.AssistantMessage(llmRefusal))
+        ));
+        when(mockChatModel.call(any(Prompt.class))).thenReturn(mockChatResponse);
+
+        RagQueryResponse response = ragService.query(new RagQueryRequest(
+                "According to the document, what accuracy percentage do the best AI testing tools achieve?",
+                3,
+                0.6
+        ));
+
+        // The flag must be TRUE despite chunks having been retrieved and sources preserved
+        assertThat(response.insufficientEvidence()).isTrue();
+        assertThat(response.answer()).isEqualTo(llmRefusal);
+        assertThat(response.sources()).hasSize(1);
+        assertThat(response.retrievedChunkCount()).isEqualTo(1);
+        assertThat(response.sources().get(0).filename()).isEqualTo("ai-testing-tools.pdf");
+    }
+
+    @Test
+    void queryFiltersOutChunksBelowSimilarityThreshold() {
+        UUID docId = UUID.randomUUID();
+        DocumentEntity indexedDoc = DocumentEntity.builder()
+                .id(docId)
+                .filename("doc.pdf")
+                .status(DocumentEntity.DocumentStatus.INDEXED)
+                .build();
+
+        Document chunkBelowThreshold = Document.builder()
+                .text("Low relevance text.")
+                .metadata(Map.of(
+                        "document_id", docId.toString(),
+                        "filename", "doc.pdf",
+                        "chunk_index", 0
+                ))
+                .score(0.45) // below request threshold 0.70
+                .build();
+
+        when(mockVectorStore.similaritySearch(any(SearchRequest.class)))
+                .thenReturn(List.of(chunkBelowThreshold));
+        when(mockDocumentRepository.findById(docId))
+                .thenReturn(Optional.of(indexedDoc));
+
+        RagQueryResponse response = ragService.query(new RagQueryRequest("Query needing high confidence", 3, 0.70));
+
+        assertThat(response.insufficientEvidence()).isTrue();
+        assertThat(response.sources()).isEmpty();
+        assertThat(response.retrievedChunkCount()).isEqualTo(0);
+        assertThat(response.answer()).isEqualTo(RagService.INSUFFICIENT_EVIDENCE_ANSWER);
+        verify(mockChatModel, never()).call(any(Prompt.class));
+    }
+
+    @Test
+    void isInsufficientEvidenceAccuratelyIdentifiesPatterns() {
+        // Null / blank / default constant
+        assertThat(RagService.isInsufficientEvidence(null)).isTrue();
+        assertThat(RagService.isInsufficientEvidence("")).isTrue();
+        assertThat(RagService.isInsufficientEvidence("   ")).isTrue();
+        assertThat(RagService.isInsufficientEvidence(RagService.INSUFFICIENT_EVIDENCE_ANSWER)).isTrue();
+
+        // Variations of insufficient evidence responses
+        assertThat(RagService.isInsufficientEvidence("The provided documents do not contain sufficient evidence to answer your question.")).isTrue();
+        assertThat(RagService.isInsufficientEvidence("According to the document, there is insufficient evidence to explain token weights.")).isTrue();
+        assertThat(RagService.isInsufficientEvidence("The document does not mention the accuracy percentage achieved by the best AI testing tools.")).isTrue();
+        assertThat(RagService.isInsufficientEvidence("No information is provided in the document regarding this topic.")).isTrue();
+        assertThat(RagService.isInsufficientEvidence("The provided context does not state the pricing tier.")).isTrue();
+        assertThat(RagService.isInsufficientEvidence("This question cannot be answered from the provided documents.")).isTrue();
+        assertThat(RagService.isInsufficientEvidence("The text makes no mention of transformer architecture details.")).isTrue();
+
+        // Affirmative valid answers must evaluate to false
+        assertThat(RagService.isInsufficientEvidence("PostgreSQL pgvector provides vector similarity search for RAG.")).isFalse();
+        assertThat(RagService.isInsufficientEvidence("The accuracy percentage is 94.5% based on benchmark tests.")).isFalse();
+        assertThat(RagService.isInsufficientEvidence("The paper presents strong evidence supporting modern transformer attention mechanisms.")).isFalse();
+
+        // Case 1: Partially supported answer that answers one part but explicitly says another requested fact is absent
+        assertThat(RagService.isInsufficientEvidence(
+                "PostgreSQL pgvector supports vector indexing and HNSW, but the document does not mention the maximum recommended dimensions."
+        )).isTrue();
+        assertThat(RagService.isInsufficientEvidence(
+                "While the document covers AI testing tools, it does not specify the accuracy percentage achieved."
+        )).isTrue();
+        assertThat(RagService.isInsufficientEvidence(
+                "The text describes the vector database; however, it does not state the supported distance metrics."
+        )).isTrue();
+        assertThat(RagService.isInsufficientEvidence(
+                "The document does not mention the memory requirement. The answer is 64 GB."
+        )).isTrue();
+
+        // Case 2: Supported answer that mentions missing information in a historical or contrasting statement but then provides the requested fact
+        assertThat(RagService.isInsufficientEvidence(
+                "While earlier versions of the specification did not mention vector search, PostgreSQL pgvector currently supports HNSW and IVFFlat index types."
+        )).isFalse();
+        assertThat(RagService.isInsufficientEvidence(
+                "Although Chapter 1 does not state the benchmark score, Section 4 confirms that the model achieved 94.5% accuracy."
+        )).isFalse();
+        assertThat(RagService.isInsufficientEvidence(
+                "The introductory chapter does not provide performance metrics. However, Section 5 explicitly states that the throughput is 10,000 queries per second."
+        )).isFalse();
+
+        // Case 3: Confident-looking answer where model asserts facts without refusal markers
+        // Demonstrates known limitation: answer-text pattern matching alone evaluates to false on confident hallucinations
+        assertThat(RagService.isInsufficientEvidence(
+                "According to the document, the exact maximum memory requirement for HNSW indexes is 64 gigabytes."
+        )).isFalse();
+    }
+
+    @Test
+    void queryHandlesPartiallySupportedAnswerWithMissingFactAsInsufficientEvidenceTrue() {
+        UUID docId = UUID.randomUUID();
+        DocumentEntity indexedDoc = DocumentEntity.builder()
+                .id(docId)
+                .filename("pgvector-spec.pdf")
+                .status(DocumentEntity.DocumentStatus.INDEXED)
+                .build();
+
+        Document chunk = Document.builder()
+                .text("PostgreSQL pgvector supports HNSW indexing for approximate nearest neighbor search.")
+                .metadata(Map.of(
+                        "document_id", docId.toString(),
+                        "filename", "pgvector-spec.pdf",
+                        "chunk_index", 0
+                ))
+                .score(0.85)
+                .build();
+
+        when(mockVectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(chunk));
+        when(mockDocumentRepository.findById(docId)).thenReturn(Optional.of(indexedDoc));
+
+        String answer = "PostgreSQL pgvector supports HNSW indexing, but the document does not mention the maximum recommended dimensions.";
+        when(mockChatModel.call(any(Prompt.class))).thenReturn(new ChatResponse(List.of(
+                new Generation(new org.springframework.ai.chat.messages.AssistantMessage(answer))
+        )));
+
+        RagQueryResponse response = ragService.query(new RagQueryRequest("What index types and max dimensions does pgvector support?", 3, 0.6));
+
+        // Must be marked insufficient evidence because a requested fact was absent
+        assertThat(response.insufficientEvidence()).isTrue();
+        assertThat(response.answer()).isEqualTo(answer);
+        assertThat(response.sources()).hasSize(1);
+    }
+
+    @Test
+    void queryHandlesSupportedAnswerWithContrastingPreambleAsInsufficientEvidenceFalse() {
+        UUID docId = UUID.randomUUID();
+        DocumentEntity indexedDoc = DocumentEntity.builder()
+                .id(docId)
+                .filename("pgvector-spec.pdf")
+                .status(DocumentEntity.DocumentStatus.INDEXED)
+                .build();
+
+        Document chunk = Document.builder()
+                .text("PostgreSQL pgvector supports HNSW and IVFFlat index types for similarity search.")
+                .metadata(Map.of(
+                        "document_id", docId.toString(),
+                        "filename", "pgvector-spec.pdf",
+                        "chunk_index", 0
+                ))
+                .score(0.88)
+                .build();
+
+        when(mockVectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(chunk));
+        when(mockDocumentRepository.findById(docId)).thenReturn(Optional.of(indexedDoc));
+
+        String answer = "While earlier drafts did not mention vector search, PostgreSQL pgvector currently supports HNSW and IVFFlat index types.";
+        when(mockChatModel.call(any(Prompt.class))).thenReturn(new ChatResponse(List.of(
+                new Generation(new org.springframework.ai.chat.messages.AssistantMessage(answer))
+        )));
+
+        RagQueryResponse response = ragService.query(new RagQueryRequest("What index types does pgvector support?", 3, 0.6));
+
+        // Must NOT be marked as insufficient evidence because the main clause answers the question
+        assertThat(response.insufficientEvidence()).isFalse();
+        assertThat(response.answer()).isEqualTo(answer);
+        assertThat(response.sources()).hasSize(1);
+    }
+
+    @Test
+    void queryDemonstratesLimitationOnConfidentHallucinationWhenContextLacksFact() {
+        UUID docId = UUID.randomUUID();
+        DocumentEntity indexedDoc = DocumentEntity.builder()
+                .id(docId)
+                .filename("pgvector-spec.pdf")
+                .status(DocumentEntity.DocumentStatus.INDEXED)
+                .build();
+
+        // Context only mentions indexing, NOT memory requirements
+        Document chunk = Document.builder()
+                .text("PostgreSQL pgvector supports HNSW indexing.")
+                .metadata(Map.of(
+                        "document_id", docId.toString(),
+                        "filename", "pgvector-spec.pdf",
+                        "chunk_index", 0
+                ))
+                .score(0.75) // Good similarity score on broad topic
+                .build();
+
+        when(mockVectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(chunk));
+        when(mockDocumentRepository.findById(docId)).thenReturn(Optional.of(indexedDoc));
+
+        // LLM generates a confident hallucination without any refusal or hedging
+        String hallucinatedAnswer = "According to the document, the exact maximum memory requirement for HNSW indexes is 64 gigabytes.";
+        when(mockChatModel.call(any(Prompt.class))).thenReturn(new ChatResponse(List.of(
+                new Generation(new org.springframework.ai.chat.messages.AssistantMessage(hallucinatedAnswer))
+        )));
+
+        RagQueryResponse response = ragService.query(new RagQueryRequest("What is the exact maximum memory requirement for HNSW indexes?", 3, 0.6));
+
+        // Documenting limitation: Without refusal markers or semantic NLI verification, answer-text matching flags this as false
+        assertThat(response.insufficientEvidence()).isFalse();
+        assertThat(response.answer()).isEqualTo(hallucinatedAnswer);
+    }
+
+    @Test
+    void queryHandlesMixedResponseWhereModelRefusesFromDocumentThenProvidesAnswerAsInsufficientEvidenceTrue() {
+        UUID docId = UUID.randomUUID();
+        DocumentEntity indexedDoc = DocumentEntity.builder()
+                .id(docId)
+                .filename("pgvector-spec.pdf")
+                .status(DocumentEntity.DocumentStatus.INDEXED)
+                .build();
+
+        Document chunk = Document.builder()
+                .text("PostgreSQL pgvector provides vector indexing capabilities.")
+                .metadata(Map.of(
+                        "document_id", docId.toString(),
+                        "filename", "pgvector-spec.pdf",
+                        "chunk_index", 0
+                ))
+                .score(0.80)
+                .build();
+
+        when(mockVectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(chunk));
+        when(mockDocumentRepository.findById(docId)).thenReturn(Optional.of(indexedDoc));
+
+        String mixedAnswer = "The document does not mention the memory requirement. The answer is 64 GB.";
+        when(mockChatModel.call(any(Prompt.class))).thenReturn(new ChatResponse(List.of(
+                new Generation(new org.springframework.ai.chat.messages.AssistantMessage(mixedAnswer))
+        )));
+
+        RagQueryResponse response = ragService.query(new RagQueryRequest("What is the memory requirement for pgvector?", 3, 0.6));
+
+        // Mixed response must be flagged as insufficientEvidence=true because the requested fact was missing from the library
+        assertThat(response.insufficientEvidence()).isTrue();
+        assertThat(response.answer()).isEqualTo(mixedAnswer);
+        assertThat(response.sources()).hasSize(1);
+    }
 }

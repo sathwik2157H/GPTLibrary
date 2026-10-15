@@ -9,7 +9,7 @@ GPTLibrary is an enterprise-grade Java 17 Spring Boot RAG (Retrieval-Augmented G
 - **Java:** 17 (OpenJDK Temurin)
 - **Framework:** Spring Boot 3.5.16
 - **AI / Embeddings:** Spring AI 1.1.8
-  - **Chat Model:** `gemini-2.5-flash` (configurable via `GEMINI_CHAT_MODEL`, fallback `gemini-3.5-flash-lite`)
+  - **Chat Model:** `gemini-3.5-flash-lite` (configurable via `GEMINI_CHAT_MODEL`, e.g., `gemini-2.5-flash`)
   - **Embedding Model:** `gemini-embedding-001` (768 output dimensions, client-side unit $L_2$ normalized)
 - **Vector Database:** PostgreSQL 16 with `pgvector` extension (Docker containerized)
 - **Database Migrations:** Flyway (`V1`, `V2`, `V3`)
@@ -100,6 +100,11 @@ The application will start on port `8080`.
       "insufficientEvidence": false
     }
     ```
+  - **`insufficientEvidence` Contract & Limitation:**
+    The `insufficientEvidence` boolean flag is a heuristic absence and refusal indicator. It evaluates to `true` when:
+    - Zero valid vector chunks are retrieved above the requested `similarityThreshold` (or all chunks belong to unindexed/failed documents).
+    - The LLM's generated response contains explicit refusal or missing-fact phrases (e.g. *"the document does not mention..."*, *"insufficient evidence..."*), while distinguishing concessive/contrasting preambles (e.g. *"While earlier drafts did not mention X, Section 4 confirms Y"* evaluates to `false`).
+    - *Known Limitation:* This flag is a heuristic signal based on syntactic patterns and retrieval presence; it does **not** provide a mathematical guarantee against confident, unhedged hallucinations where the LLM asserts ungrounded claims without expressing uncertainty.
 
 ---
 
@@ -117,7 +122,7 @@ Database migrations are tracked in `src/main/resources/db/migration/`:
 | Variable | Default Value | Description |
 |---|---|---|
 | `GEMINI_API_KEY` | *(None - Required for live API)* | Google Gemini API Key |
-| `GEMINI_CHAT_MODEL` | `gemini-2.5-flash` | Gemini Chat Model (e.g., `gemini-3.5-flash-lite`) |
+| `GEMINI_CHAT_MODEL` | `gemini-3.5-flash-lite` | Gemini Chat Model (e.g., `gemini-2.5-flash`) |
 | `DB_HOST` | `localhost` | PostgreSQL host |
 | `DB_PORT` | `5432` | PostgreSQL port |
 | `DB_NAME` | `gptlibrary` | Database name |
@@ -130,5 +135,5 @@ Database migrations are tracked in `src/main/resources/db/migration/`:
 
 - [x] **Phase 1:** Environment setup, containerized vector database, application skeleton, health endpoints, Flyway migrations, and integration testing.
 - [x] **Phase 2:** Document ingestion pipeline with Apache Tika parsing (PDF, DOCX, TXT), chunking (512 tokens / 50 overlap), unit $L_2$ normalized 768-dim embeddings, transactional status persistence, and orphaned vector cleanup.
-- [x] **Phase 3:** RAG retrieval pipeline with cosine similarity search, failed document isolation, Gemini chat prompt generation (`gemini-2.5-flash`), structured source citations, and insufficient-evidence handling.
+- [x] **Phase 3:** RAG retrieval pipeline with cosine similarity search, failed document isolation, Gemini chat prompt generation (`gemini-3.5-flash-lite`), structured source citations, and heuristic insufficient-evidence handling.
 - [ ] **Phase 4:** Observability, error handling, SSE streaming, and user interface.

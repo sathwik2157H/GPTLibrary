@@ -102,6 +102,65 @@ class RagControllerIntegrationTest {
                 .andExpect(jsonPath("$.answer").value("I could not find sufficient relevant evidence in the indexed library documents to answer your question."));
     }
 
+    @Test
+    void queryWithRetrievedChunksButAbsentFactReturnsInsufficientEvidenceTrue() throws Exception {
+        String content = "AI testing tools have evolved significantly in modern software engineering to automate unit and regression testing.";
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "ai-testing-overview.txt",
+                "text/plain",
+                content.getBytes(StandardCharsets.UTF_8)
+        );
+        DocumentIngestionService.IngestionResult ingestionResult = ingestionService.ingest(file);
+        assertThat(ingestionResult.status()).isEqualTo(DocumentEntity.DocumentStatus.INDEXED);
+
+        RagQueryRequest request = new RagQueryRequest(
+                "According to the document, what accuracy percentage do the best AI testing tools achieve?",
+                3,
+                0.1
+        );
+
+        mockMvc.perform(post("/api/v1/rag/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.insufficientEvidence").value(true))
+                .andExpect(jsonPath("$.retrievedChunkCount").value(1))
+                .andExpect(jsonPath("$.sources", hasSize(1)))
+                .andExpect(jsonPath("$.sources[0].filename").value("ai-testing-overview.txt"))
+                .andExpect(jsonPath("$.sources[0].documentId").value(ingestionResult.documentId().toString()))
+                .andExpect(jsonPath("$.answer").value("The provided document discusses AI testing tools, but does not mention the accuracy percentage achieved by the best tools."));
+    }
+
+    @Test
+    void queryWithRetrievedChunksAboutTransformersReturnsInsufficientEvidenceTrue() throws Exception {
+        String content = "Transformer architectures have revolutionized natural language processing through self-attention layers.";
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "transformers.txt",
+                "text/plain",
+                content.getBytes(StandardCharsets.UTF_8)
+        );
+        DocumentIngestionService.IngestionResult ingestionResult = ingestionService.ingest(file);
+        assertThat(ingestionResult.status()).isEqualTo(DocumentEntity.DocumentStatus.INDEXED);
+
+        RagQueryRequest request = new RagQueryRequest(
+                "According to the document, how does the transformer attention mechanism assign weights to tokens?",
+                3,
+                0.1
+        );
+
+        mockMvc.perform(post("/api/v1/rag/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.insufficientEvidence").value(true))
+                .andExpect(jsonPath("$.retrievedChunkCount").value(1))
+                .andExpect(jsonPath("$.sources", hasSize(1)))
+                .andExpect(jsonPath("$.sources[0].filename").value("transformers.txt"))
+                .andExpect(jsonPath("$.answer").value("The provided documents do not contain sufficient evidence to explain the transformer attention mechanism."));
+    }
+
     @Autowired
     private com.gptlibrary.document.service.DocumentPersistenceService documentPersistenceService;
 

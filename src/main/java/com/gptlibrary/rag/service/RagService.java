@@ -82,6 +82,12 @@ public class RagService {
         List<Document> validMatches = new ArrayList<>();
 
         for (Document doc : rawMatches) {
+            Double score = doc.getScore();
+            if (score != null && score < similarityThreshold) {
+                log.debug("Excluding vector chunk {} with score {} below threshold {}.", doc.getId(), score, similarityThreshold);
+                continue;
+            }
+
             Object docIdObj = doc.getMetadata().get("document_id");
             if (docIdObj == null) {
                 continue;
@@ -156,12 +162,94 @@ public class RagService {
                 ? response.getResult().getOutput().getText()
                 : INSUFFICIENT_EVIDENCE_ANSWER;
 
+        boolean insufficientEvidence = isInsufficientEvidence(answer);
+
         return new RagQueryResponse(
                 request.question(),
                 answer,
                 sources,
                 validMatches.size(),
-                false
+                insufficientEvidence
         );
+    }
+
+    /**
+     * Determines whether an answer indicates that the provided document context
+     * contains insufficient evidence to answer the user's question.
+     * <p>
+     * Note: This is a heuristic refusal and absence indicator based on syntactic and lexical patterns.
+     * It does not guarantee that every claim in an affirmative response is grounded
+     * (e.g. an unhedged confident hallucination without refusal markers evaluates to false).
+     */
+    public static boolean isInsufficientEvidence(String answer) {
+        if (answer == null || answer.isBlank()) {
+            return true;
+        }
+        if (answer.trim().equalsIgnoreCase(INSUFFICIENT_EVIDENCE_ANSWER)) {
+            return true;
+        }
+
+        String lower = answer.toLowerCase(java.util.Locale.ROOT);
+
+        if (!containsRefusalMarker(lower)) {
+            return false;
+        }
+
+        // Check if the refusal marker was only in an introductory concessive/contrasting clause
+        // e.g. "While/Although earlier versions do not mention X, Section 4 confirms that Y is Z."
+        if (lower.startsWith("while ") || lower.startsWith("although ") || lower.startsWith("even though ")) {
+            int commaIdx = lower.indexOf(',');
+            if (commaIdx > 0) {
+                String concessiveClause = lower.substring(0, commaIdx);
+                String mainClause = lower.substring(commaIdx + 1);
+                // If the refusal was ONLY in the concessive clause and the main clause affirms facts
+                if (containsRefusalMarker(concessiveClause) && !containsRefusalMarker(mainClause)) {
+                    return false;
+                }
+            }
+        }
+
+        // e.g. "Chapter 1 does not state the metrics. However, Section 5 confirms that throughput is 10,000 qps."
+        int howeverIdx = lower.indexOf("however,");
+        if (howeverIdx > 0) {
+            String beforeHowever = lower.substring(0, howeverIdx);
+            String afterHowever = lower.substring(howeverIdx + 8);
+            if (containsRefusalMarker(beforeHowever) && !containsRefusalMarker(afterHowever)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static boolean containsRefusalMarker(String text) {
+        return text.contains("insufficient evidence")
+                || text.contains("not contain sufficient evidence")
+                || text.contains("does not contain sufficient evidence")
+                || text.contains("do not contain sufficient evidence")
+                || text.contains("not contain enough information")
+                || text.contains("does not contain enough information")
+                || text.contains("do not contain enough information")
+                || text.contains("does not mention")
+                || text.contains("do not mention")
+                || text.contains("not mentioned in the")
+                || text.contains("does not state")
+                || text.contains("do not state")
+                || text.contains("not stated in the")
+                || text.contains("does not provide information")
+                || text.contains("does not provide any information")
+                || text.contains("no information is provided")
+                || text.contains("no information provided")
+                || text.contains("not provided in the")
+                || text.contains("not present in the")
+                || text.contains("cannot be answered from the provided")
+                || text.contains("cannot be determined from the provided")
+                || text.contains("cannot be found in the provided")
+                || text.contains("no mention of")
+                || text.contains("does not contain information")
+                || text.contains("does not specify")
+                || text.contains("did not mention")
+                || text.contains("did not state")
+                || text.contains("did not provide");
     }
 }

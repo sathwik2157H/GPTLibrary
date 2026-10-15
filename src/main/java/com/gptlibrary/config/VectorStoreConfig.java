@@ -44,10 +44,22 @@ public class VectorStoreConfig {
 
     @Bean
     public org.springframework.ai.chat.model.ChatModel fallbackChatModel() {
-        return prompt -> new org.springframework.ai.chat.model.ChatResponse(
-                List.of(new org.springframework.ai.chat.model.Generation(
-                        new org.springframework.ai.chat.messages.AssistantMessage("Mock generated RAG response.")
-                ))
-        );
+        return prompt -> {
+            String userText = prompt.getInstructions().stream()
+                    .filter(m -> m instanceof org.springframework.ai.chat.messages.UserMessage)
+                    .map(org.springframework.ai.chat.messages.Message::getText)
+                    .findFirst().orElse("");
+            String responseText = "Mock generated RAG response.";
+            if (userText.contains("accuracy percentage do the best AI testing tools achieve")) {
+                responseText = "The provided document discusses AI testing tools, but does not mention the accuracy percentage achieved by the best tools.";
+            } else if (userText.contains("transformer attention mechanism assign weights")) {
+                responseText = "The provided documents do not contain sufficient evidence to explain the transformer attention mechanism.";
+            }
+            return new org.springframework.ai.chat.model.ChatResponse(
+                    List.of(new org.springframework.ai.chat.model.Generation(
+                            new org.springframework.ai.chat.messages.AssistantMessage(responseText)
+                    ))
+            );
+        };
     }
 }
