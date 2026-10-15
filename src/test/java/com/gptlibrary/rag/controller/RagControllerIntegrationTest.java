@@ -47,6 +47,7 @@ class RagControllerIntegrationTest {
 
     @BeforeEach
     void resetState() {
+        com.gptlibrary.config.TestDatabaseSafetyGuard.assertSafeForTestCleanup(jdbcTemplate);
         jdbcTemplate.update("DELETE FROM vector_store");
         documentRepository.deleteAll();
     }
@@ -208,5 +209,34 @@ class RagControllerIntegrationTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("Bad Request"))
                 .andExpect(jsonPath("$.message").value("Question must not be blank."));
+    }
+
+    @Test
+    void queryWithDefaultThresholdOmitsRequestThresholdAndSucceeds() throws Exception {
+        String content = "PostgreSQL pgvector provides vector similarity search capabilities for RAG applications. It supports HNSW and IVFFlat indexes.";
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "default-threshold-doc.txt",
+                "text/plain",
+                content.getBytes(StandardCharsets.UTF_8)
+        );
+        DocumentIngestionService.IngestionResult ingestionResult = ingestionService.ingest(file);
+        assertThat(ingestionResult.status()).isEqualTo(DocumentEntity.DocumentStatus.INDEXED);
+
+        // Request with similarityThreshold and topK omitted (null) to test application default 0.45
+        RagQueryRequest request = new RagQueryRequest(
+                "What does PostgreSQL pgvector provide for RAG?",
+                null,
+                null
+        );
+
+        mockMvc.perform(post("/api/v1/rag/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.insufficientEvidence").value(false))
+                .andExpect(jsonPath("$.sources", hasSize(1)))
+                .andExpect(jsonPath("$.retrievedChunkCount").value(1))
+                .andExpect(jsonPath("$.sources[0].filename").value("default-threshold-doc.txt"));
     }
 }

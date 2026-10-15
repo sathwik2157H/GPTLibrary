@@ -79,7 +79,7 @@ The application will start on port `8080`.
     {
       "question": "What is pgvector?",
       "topK": 4,
-      "similarityThreshold": 0.65
+      "similarityThreshold": 0.45
     }
     ```
   - **Response Body:**

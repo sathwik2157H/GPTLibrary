@@ -45,7 +45,7 @@ spring:
 
 gptlibrary:
   rag:
-    similarity-threshold: 0.65
+    similarity-threshold: 0.45
     top-k: 4
 
 server:

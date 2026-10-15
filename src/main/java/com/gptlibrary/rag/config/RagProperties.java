@@ -13,9 +13,9 @@ public class RagProperties {
 
     /**
      * Minimum cosine similarity threshold for vector retrieval (between 0.0 and 1.0).
-     * Defaults to 0.65.
+     * Defaults to 0.45.
      */
-    private double similarityThreshold = 0.65;
+    private double similarityThreshold = 0.45;
 
     /**
      * Default maximum number of relevant chunks to retrieve.

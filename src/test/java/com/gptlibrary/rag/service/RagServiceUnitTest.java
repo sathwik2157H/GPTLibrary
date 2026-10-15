@@ -8,6 +8,7 @@ import com.gptlibrary.rag.dto.RagQueryResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -45,7 +46,7 @@ class RagServiceUnitTest {
         mockDocumentRepository = mock(DocumentRepository.class);
         mockChatModel = mock(ChatModel.class);
         ragProperties = new RagProperties();
-        ragProperties.setSimilarityThreshold(0.65);
+        ragProperties.setSimilarityThreshold(0.45);
         ragProperties.setTopK(4);
 
         ragService = new RagService(
@@ -243,6 +244,99 @@ class RagServiceUnitTest {
         assertThat(response.sources()).isEmpty();
         assertThat(response.retrievedChunkCount()).isEqualTo(0);
         assertThat(response.answer()).isEqualTo(RagService.INSUFFICIENT_EVIDENCE_ANSWER);
+        verify(mockChatModel, never()).call(any(Prompt.class));
+    }
+
+    @Test
+    void defaultSimilarityThresholdInRagPropertiesIs045() {
+        RagProperties defaultProperties = new RagProperties();
+        assertThat(defaultProperties.getSimilarityThreshold()).isEqualTo(0.45);
+        assertThat(defaultProperties.getTopK()).isEqualTo(4);
+    }
+
+    @Test
+    void queryUsesDefaultSimilarityThresholdWhenOmittedInRequest() {
+        UUID docId = UUID.randomUUID();
+        DocumentEntity indexedDoc = DocumentEntity.builder()
+                .id(docId)
+                .filename("doc.pdf")
+                .status(DocumentEntity.DocumentStatus.INDEXED)
+                .build();
+
+        // One chunk at 0.50 (above default 0.45) and one chunk at 0.40 (below default 0.45)
+        Document chunkAbove = Document.builder()
+                .text("Relevant content.")
+                .metadata(Map.of("document_id", docId.toString(), "filename", "doc.pdf", "chunk_index", 0))
+                .score(0.50)
+                .build();
+        Document chunkBelow = Document.builder()
+                .text("Marginal content.")
+                .metadata(Map.of("document_id", docId.toString(), "filename", "doc.pdf", "chunk_index", 1))
+                .score(0.40)
+                .build();
+
+        when(mockVectorStore.similaritySearch(any(SearchRequest.class)))
+                .thenReturn(List.of(chunkAbove, chunkBelow));
+        when(mockDocumentRepository.findById(docId))
+                .thenReturn(Optional.of(indexedDoc));
+        when(mockChatModel.call(any(Prompt.class))).thenReturn(new ChatResponse(List.of(
+                new Generation(new AssistantMessage("Answer based on relevant content."))
+        )));
+
+        // Request with similarityThreshold = null (omitted)
+        RagQueryRequest request = new RagQueryRequest("What is this document about?", null, null);
+        RagQueryResponse response = ragService.query(request);
+
+        // Verify SearchRequest passed to vectorStore uses the configured default 0.45
+        ArgumentCaptor<SearchRequest> searchRequestCaptor = ArgumentCaptor.forClass(SearchRequest.class);
+        verify(mockVectorStore).similaritySearch(searchRequestCaptor.capture());
+        SearchRequest capturedSearch = searchRequestCaptor.getValue();
+        assertThat(capturedSearch.getSimilarityThreshold()).isEqualTo(0.45);
+        assertThat(capturedSearch.getTopK()).isEqualTo(4);
+
+        // Verify that the chunk below default 0.45 was filtered out in memory and only the chunk >= 0.45 was retained
+        assertThat(response.insufficientEvidence()).isFalse();
+        assertThat(response.retrievedChunkCount()).isEqualTo(1);
+        assertThat(response.sources()).hasSize(1);
+        assertThat(response.sources().get(0).score()).isEqualTo(0.50);
+    }
+
+    @Test
+    void queryPreservesExplicitSimilarityThresholdOverride() {
+        UUID docId = UUID.randomUUID();
+        DocumentEntity indexedDoc = DocumentEntity.builder()
+                .id(docId)
+                .filename("doc.pdf")
+                .status(DocumentEntity.DocumentStatus.INDEXED)
+                .build();
+
+        // Chunk at 0.50 is above default 0.45, but below client override of 0.70
+        Document chunk = Document.builder()
+                .text("Moderate match text.")
+                .metadata(Map.of("document_id", docId.toString(), "filename", "doc.pdf", "chunk_index", 0))
+                .score(0.50)
+                .build();
+
+        when(mockVectorStore.similaritySearch(any(SearchRequest.class)))
+                .thenReturn(List.of(chunk));
+        when(mockDocumentRepository.findById(docId))
+                .thenReturn(Optional.of(indexedDoc));
+
+        // Client explicitly specifies similarityThreshold = 0.70
+        RagQueryRequest request = new RagQueryRequest("Require strict match", 2, 0.70);
+        RagQueryResponse response = ragService.query(request);
+
+        // Verify SearchRequest passed to vectorStore uses client override 0.70
+        ArgumentCaptor<SearchRequest> searchRequestCaptor = ArgumentCaptor.forClass(SearchRequest.class);
+        verify(mockVectorStore).similaritySearch(searchRequestCaptor.capture());
+        SearchRequest capturedSearch = searchRequestCaptor.getValue();
+        assertThat(capturedSearch.getSimilarityThreshold()).isEqualTo(0.70);
+        assertThat(capturedSearch.getTopK()).isEqualTo(2);
+
+        // Score 0.50 < 0.70 so it is filtered out
+        assertThat(response.insufficientEvidence()).isTrue();
+        assertThat(response.retrievedChunkCount()).isEqualTo(0);
+        assertThat(response.sources()).isEmpty();
         verify(mockChatModel, never()).call(any(Prompt.class));
     }
 

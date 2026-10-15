@@ -2,12 +2,25 @@ gptlibrary:
   ai:
     offline-mock: true
   rag:
-    similarity-threshold: 0.5
+    similarity-threshold: 0.45
     top-k: 4
 
 spring:
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_TEST_NAME:gptlibrary_test}
+    username: ${DB_USER:gptuser}
+    password: ${DB_PASSWORD:gptpassword}
+    driver-class-name: org.postgresql.Driver
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
   ai:
     model:
       chat: none # disables GoogleGenAiChatAutoConfiguration during tests
       embedding:
         text: none # disables GoogleGenAiTextEmbeddingAutoConfiguration during tests
+
+context:
+  initializer:
+    classes: com.gptlibrary.config.TestDatabaseInitializer

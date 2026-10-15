@@ -44,6 +44,7 @@ class DocumentPersistenceAndCleanupTest {
 
     @BeforeEach
     void cleanUp() {
+        com.gptlibrary.config.TestDatabaseSafetyGuard.assertSafeForTestCleanup(jdbcTemplate);
         jdbcTemplate.update("DELETE FROM vector_store");
         documentRepository.deleteAll();
     }
